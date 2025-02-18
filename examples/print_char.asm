@@ -1,0 +1,7 @@
+.ORIG x3000
+  LD R0, LABEL
+  OUT
+  HALT
+
+LABEL .FILL x41  ; 'A'
+.END
