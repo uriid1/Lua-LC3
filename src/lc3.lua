@@ -1,133 +1,30 @@
--- Виртуальная машина LC-3 на Lua
---
---[[
-Инструкции
-  * Все инструкции по 16 бит
-
-Разбиение полей в инструкции LC-3
---------------------------------------------------
-| 15  12 | 11  9 |  8  6  | 5 | 4  3  2 | 1  0   |
-| -------+-------+--------+---+----------------- |
-| OPCODE |  DR   |  SR1   | M |  OPERAND         |
---------------------------------------------------
-
-Описание инструкций
-  * OPCODE - Опкод
-  * DR     - Регистр назначения
-  * SR1    - Первый источник, Source Register 1
-  * M      - Режим: 0 – регистр, 1 – немедленное значение
-
-Битность инструкций
-  * OPCODE - Биты 15-12
-  * DR     - Биты 11-9
-  * SR     - Биты 8-6
-  * M      - Бит 5
-  * SR2    - Биты 4-0 M == 0
-  * imm5   - Биты 4-9 M == 1
---]]
-
---
+-------------------------------
+-- Little Computer 3         --
+-- uriid1 2025               --
+-------------------------------
 local vm = {}
 
---
--- Отладка
-local p = require('pimp')
- :decimalToHexadecimal()
-
-function bitCount(n)
-  if n == 0 then return 1 end
-  return math.floor(math.log(n, 2)) + 1
-end
-
--- Печать числа как HEX
-local function num2hex(number)
-  return string.format("%X", number)
-end
-
--- Число в строку бинарного вида
-local function num2bin(number, count_bits)
-  count_bits = count_bits or bitCount(number)
-
-  -- Преобразуем число в двоичную строку
-  local binary = ""
-  for i = count_bits, 0, -1 do
-    binary = binary .. tostring((number >> i) & 0x1)
-  end
-
-  return binary
-end
-
-local function addrVal2bits(number)
-    -- Преобразуем число в двоичную строку
-  local binary = ""
-  for i = 15, 0, -1 do
-    binary = binary .. tostring((number >> i) & 0x1)
-  end
-
-  local data = {
-    binary:sub(1, 4),
-    binary:sub(5, 8),
-    binary:sub(9, 12),
-    binary:sub(13, 16),
-  }
-
-  return table.concat(data, ' ')
-end
-
--- Число в строку бинарного вида
--- только для инструкций LC3
-local function num2bini(number)
-  -- Преобразуем число в двоичную строку
-  local binary = ""
-  for i = 15, 0, -1 do
-    binary = binary .. tostring((number >> i) & 0x1)
-  end
-
-  local data = {
-    opcode = binary:sub(1, 4),
-    param1 = binary:sub(5, 8),
-    param2 = binary:sub(9, 11),
-    m = binary:sub(12, 12),
-    param3 = binary:sub(13, 16),
-  }
-
-  return data
-end
-
--- Печать числа с учетом флага, если оно отрицательное
-local function num2bin_flag(number)
-  -- Преобразуем число в двоичную строку
-  local binary = ""
-  for i = 15, 0, -1 do
-    binary = binary .. tostring((number >> i) & 0x1)
-  end
-
-  local data = {
-    flag = binary:sub(16, 16),
-    value = binary:sub(1, 15)
-  }
-
-  return data
-end
---
-
 -- Константы
-local MEMORY_SIZE = 65536 -- 2^16 ячеек памяти
+--
+local MEMORY_SIZE = 65536 -- 2^16
+-- Опкод: регистр флагов условий
+local OPCODE_PC = 0x8
+-- Опкод: регистр условий
+local OPCODE_COND = 0x9
+-- Зарезервированные адреса
+local OS_KBSR = 0xFE00
+local OS_KBDR = 0xFE02
 
--- Инициализация памяти и регистров
--- Регистры занимают 3 бита (значения от 0 до 7)
+-- Инициализация памяти
 --
 vm.memory = {}
 
--- Заполняем память нулями
 for i = 0, MEMORY_SIZE - 1 do
   vm.memory[i] = 0
 end
 
--- x0  x1  x2  x3  x4  x5  x6  x7   x8   x9    xA
--- R0, R1, R2, R3, R4, R5, R6, R7, RPC, RCND, RCNT
-local OPCODE_PC = 0x8
-local OPCOD_COND = 0x9
+-- Регистры
+--
 vm.registers = {
   [0x0] = 0,  -- R0
   [0x1] = 0,  -- R1
@@ -137,18 +34,19 @@ vm.registers = {
   [0x5] = 0,  -- R5
   [0x6] = 0,  -- R6
   [0x7] = 0,  -- R7
-  [OPCODE_PC] = 0,    -- PC Счётчик команд
-  [OPCOD_COND] = 0,  -- COND Регистр флагов условий
+  [OPCODE_PC]   = 0,
+  [OPCODE_COND] = 0,
   [0xA] = 0,  -- CNT
 }
 
--- Счётчик команд
+-- Опкоды инструкций
+--
 vm.opcodes = {
   BR   = 0x0,
   ADD  = 0x1,
   LD   = 0x2,
   ST   = 0x3,
-  JST  = 0x4,
+  JSR  = 0x4,
   AND  = 0x5,
   LDR  = 0x6,
   STR  = 0x7,
@@ -162,14 +60,15 @@ vm.opcodes = {
   TRAP = 0xF
 }
 
--- Флаги для обработки условий
+-- Флаги обработки условий
+--
 vm.flags = {
   FP = 1 << 0,  -- 2
   FZ = 1 << 1,  -- 1
   FN = 1 << 2   -- 4
 }
 
--- Trap Vector
+-- Вектор доп.инструкций для TRAP
 vm.trapVector = {
   GETC = 0x20,
   OUT = 0x21,
@@ -181,52 +80,108 @@ vm.trapVector = {
   OUTU16 = 0x27,
 }
 
--- Обновление регистра флагов
-function vm.updateCondFlag(reg)
-  if vm.registers[reg] == 0 then
-    -- Значение в reg равно нулю
-    vm.registers[OPCOD_COND] = vm.flags.FZ
-  elseif vm.registers[reg] > 0 then
-    -- Значение в reg положительное число
-    vm.registers[OPCOD_COND] = vm.flags.FP
-  else
-    -- Значение в reg отрицательное число
-    vm.registers[OPCOD_COND] = vm.flags.FN
+-- Инициализация буфера клавиатуры
+--
+vm.keyboardBuffer = nil
+
+function vm.checkKB(addr)
+  -- Cтатус клавиатуры
+  if addr == OS_KBSR then
+    if not vm.keyboardBuffer then
+      -- Если буфер пуст, блокирующее чтение одного символа
+      local input = io.read(1)
+      if input and input ~= "" then
+        vm.keyboardBuffer = input
+      end
+    end
+
+    -- Если символ получен
+    -- то возвращается значение с установленным старшим битом (отрицательное число)
+    if vm.keyboardBuffer then
+      return 0x8000
+    end
+
+    return 0
+
+  -- Данные клавиатуры
+  elseif addr == OS_KBDR then
+    if vm.keyboardBuffer then
+      local c = string.byte(vm.keyboardBuffer) & 0xFF
+      vm.keyboardBuffer = nil
+      return c
+    end
+
+    return 0
   end
 end
 
--- Загрузка значения из памяти
+--- Чтение значения из памяти по адресу
+-- @param addr [integer]
+-- @return [integer]
 function vm.readMem(addr)
+  local kb = vm.checkKB(addr)
+  if kb then
+    return kb
+  end
+
   return vm.memory[addr]
 end
 
--- Запись значения в память по адресу
+--- Запись значения в память по адресу
+-- @param addr [integer]
+-- @param value [integer]
+-- @return [nil]
 function vm.writeMem(addr, value)
-  vm.memory[addr] = value
+  vm.memory[addr] = value & 0xFFFF
 end
 
--- Загрузка программы в память
-function vm.loadProgram(program, startAddr)
-  program[1] = nil
-  startAddr = startAddr and startAddr - 1 or 1
-  vm.registers[OPCODE_PC] = startAddr + 1
-
-  print("[Addr]   Value  Binary Addr")
-  print("-----------------------------------")
-  for i = 2, #program do
-    vm.memory[startAddr + (i - 1)] = program[i]
-
-    print(
-      string.format("[0x%04X] 0x%04X %s",
-        startAddr + (i - 1),
-        program[i],
-        addrVal2bits(program[i]))
-    )
+--- Обработка числа со знаком
+-- @param value [integer]
+-- @return [nil]
+local function signedNumber(value)
+  -- бит 15 (старший бит) в 16-битном числе
+  -- 0x8000 = 0b1000000000000000 = 32768
+  if (value & 0x8000) ~= 0 then
+    -- (0xFFFF + 1) = 0x10000 = 0b10000000000000000 = 65536
+    value = value - (0xFFFF + 1)
   end
-  print("-----------------------------------")
+
+  return value
 end
 
--- Знаковое 9-битное смещение
+--- Обновление регистра флагов
+-- @param reg [integer]
+-- @return [nil]
+function vm.updateCondFlag(reg)
+  local value = signedNumber(vm.registers[reg])
+
+  if value == 0 then
+    vm.registers[OPCODE_COND] = vm.flags.FZ
+  elseif value > 0 then
+    vm.registers[OPCODE_COND] = vm.flags.FP
+  else
+    vm.registers[OPCODE_COND] = vm.flags.FN
+  end
+end
+
+--- Знаковое 11-битное смещение
+-- @param instruction [integer]
+-- @return [integer] offset11
+local function getOffset11(instruction)
+  local offset11 = instruction & 0x7FF
+
+  -- Проверка на знак минус
+  -- Проверка на знак (если 10-й бит == 1, то число отрицательное)
+  if (offset11 >> 10) == 1 then
+    offset11 = offset11 - 0x800
+  end
+
+  return offset11
+end
+
+--- Знаковое 9-битное смещение
+-- @param instruction [integer]
+-- @return [integer] offset9
 local function getOffset9(instruction)
   local offset9 = instruction & 0x1FF
 
@@ -239,7 +194,9 @@ local function getOffset9(instruction)
   return offset9
 end
 
--- Знаковое 6-битное смещение
+--- Знаковое 6-битное смещение
+-- @param instruction [integer]
+-- @return [integer] offset6
 local function getOffset6(instruction)
   local offset6 = instruction & 0x3F
 
@@ -252,36 +209,55 @@ local function getOffset6(instruction)
   return offset6
 end
 
--- Функция получает регистр назначения
+--- Функция получает регистр назначения
+-- @param instruction [integer]
+-- @return [integer] dr
 local function getDr(instruction)
   return (instruction >> 9) & 0x7
 end
 
--- Получение 5-го бита
--- для определения какую требуется выполнить инструкцию
+--- Получение 5-го бита
+--- для определения какую требуется выполнить инструкцию
+-- @param instruction [integer]
+-- @return [integer] immFlag
 local function getImmFlag(instruction)
   return (instruction >> 5) & 1
 end
 
--- Источник
--- как правило, для команд ST, STI, STR
+--- Источник
+--- как правило, для команд ST, STI, STR
+-- @param instruction [integer]
+-- @return [integer] sr
 local function getSr(instruction)
   return (instruction >> 9) & 0x7
 end
 
--- Первый источник (регистр)
+--- Первый источник (регистр)
+-- @param instruction [integer]
+-- @return [integer] sr1
 local function getSr1(instruction)
   return (instruction >> 6) & 0x7
 end
 
--- Второй источник (регистр)
+--- Второй источник (регистр)
+-- @param instruction [integer]
+-- @return [integer] sr2
 local function getSr2(instruction)
   return instruction & 0x7
 end
 
--- Базовый регистр
+--- Базовый регистр
+-- @param instruction [integer]
+-- @return [integer] baser
 local function getBaser(instruction)
   return (instruction >> 6) & 0x7
+end
+
+--- Флаг условий
+-- @param instruction [integer]
+-- @return [integer] dr
+local function getCondFlag(instruction)
+  return (instruction >> 9) & 0x7
 end
 
 -- Получение немедленного значения
@@ -300,44 +276,94 @@ local function getImm5(instruction)
   return imm5
 end
 
--- Преобразование числа с знаковым расширением
-local function signedNumber(value)
-  -- Проверка на знаковое расширение загруженного значения
-  -- 0x8000 = 0b1000000000000000 = 32768
-  -- бит 15 (старший бит) в 16-битном числе
-  if (value & 0x8000) ~= 0 then
-    -- (0xFFFF + 1) = 0x10000 = 0b1_0000000000000000 = 65536
-    value = value - (0xFFFF + 1)
-  end
-
-  return value
-end
-
--- Инструкция TRAP OUT
+-- Вывод значения из R0
 local function trap_out()
   local char = vm.registers[0] & 0xFF
   io.write(string.char(char))
   io.flush()
 end
 
---
+-- Печать символов, пока не встретится 0x0000
 local function trap_puts()
   local addr = vm.registers[0]
-  for i = addr, #vm.memory do
+
+  for i = addr, MEMORY_SIZE - 1 do
     local char = vm.memory[i]
+    io.write(string.char(char))
+
     if char == 0 then
       break
     end
-
-    io.write(string.char(char))
   end
   io.flush()
+end
+
+-- Чтение символа с клавиатуры и сохранение его ASCII-кода в R0
+local function trap_getc()
+  local input = io.read(1)
+
+  -- print(input)
+  if input then
+    local ascii_value = string.byte(input)
+    vm.registers[0] = ascii_value
+  else
+    vm.registers[0] = 0
+  end
+end
+
+local function addrVal2bits(number)
+  local binary = ""
+  for i = 15, 0, -1 do
+    binary = binary .. tostring((number >> i) & 0x1)
+  end
+
+  return table.concat({
+    binary:sub(1, 4),  binary:sub(5, 8),
+    binary:sub(9, 12), binary:sub(13, 16),
+  }, ' ')
+end
+
+--- Загрузка программы в память
+-- @param program [table]
+-- @param startAddr [integer]
+-- @return [nil]
+function vm.loadProgram(program, startAddr, opts)
+  opts = opts or {}
+
+  program[1] = nil
+  startAddr = startAddr and startAddr - 1 or 1
+  vm.registers[OPCODE_PC] = startAddr + 1
+
+  if opts.debug then
+    print("[Addr]   Value  Binary Addr")
+    print("+----------------------------------+")
+  end
+
+  for i = 2, #program do
+    local addr = startAddr + (i - 1)
+    local instruction = program[i]
+
+    vm.memory[addr] = instruction
+
+    if opts.debug then
+      print(
+        string.format("[0x%04X] 0x%04X %s",
+        addr,
+        instruction,
+        addrVal2bits(instruction)
+      ))
+    end
+  end
+
+  if opts.debug then
+    print("+----------------------------------+")
+  end
 end
 
 -- Основной цикл
 function vm.run()
   while true do
-    -- Текущий указатель на инструкцию в памяти
+    -- Указатель на инструкцию в памяти
     local PC = vm.registers[OPCODE_PC]
     -- Инструкция по указателю
     local instruction = vm.memory[PC]
@@ -346,15 +372,14 @@ function vm.run()
 
     -- Опкод (первые 4 бита)
     local opcode = instruction >> 12
-    io.write(opcode, " ")
 
     if opcode == vm.opcodes.BR then
-      local condFlag = (instruction >> 9) & 0x7
-      local pcOffset = getOffset9(instruction)
+      local condFlag = getCondFlag(instruction)
+      local offset9 = getOffset9(instruction)
 
       -- Если флаг условий совпадает с текущим состоянием флагов, выполняем переход
-      if (condFlag & vm.registers[OPCOD_COND]) ~= 0 then
-        vm.registers[OPCODE_PC] = vm.registers[OPCODE_PC] + pcOffset
+      if (condFlag & vm.registers[OPCODE_COND]) ~= 0 then
+        vm.registers[OPCODE_PC] = vm.registers[OPCODE_PC] + offset9
       end
 
     elseif opcode == vm.opcodes.ADD then
@@ -365,7 +390,7 @@ function vm.run()
       -- Флаг режима
       local immFlag = getImmFlag(instruction)
 
-      -- Второй источник (SR2) - если флаг равен 0
+      -- Второй источник (SR2)
       if immFlag == 0 then
         local sr2 = getSr2(instruction)
         vm.registers[dr] = vm.registers[sr1] + vm.registers[sr2]
@@ -388,6 +413,7 @@ function vm.run()
 
       -- Загрузка значения из памяти в регистр
       vm.registers[dr] = signedNumber(value)
+
       -- Обновление флагов
       vm.updateCondFlag(dr)
 
@@ -398,7 +424,26 @@ function vm.run()
       local offset9 = getOffset9(instruction)
 
       local value = vm.registers[sr]
-      vm.writeMem(vm.registers[OPCODE_PC] + offset9, value)
+      local addr = vm.registers[OPCODE_PC] + offset9
+      vm.writeMem(addr, value)
+
+    elseif opcode == vm.opcodes.JSR then
+      -- Флаг JSR или JSRR
+      -- Проверка 11 бита, 1 или 0
+      local jsrMode = (instruction >> 11) & 0x1
+
+      vm.registers[0x7] = vm.registers[OPCODE_PC]
+
+      -- JSRR
+      if jsrMode == 0 then
+        local baser = getBaser(instruction)
+        vm.registers[OPCODE_PC] = vm.registers[baser]
+
+      -- JSR
+      elseif jsrMode == 1 then
+        local offset11 = getOffset11(instruction)
+        vm.registers[OPCODE_PC] = vm.registers[OPCODE_PC] + offset11
+      end
 
     elseif opcode == vm.opcodes.STR then
       -- Регистр, данные из которого записываются в память
@@ -410,7 +455,7 @@ function vm.run()
       -- Вычисление конечного адреса
       local address = vm.registers[baser] + offset6
       -- Запись данных в память
-      vm.memory[address] = vm.registers[sr]
+      vm.writeMem(address, vm.registers[sr])
 
     elseif opcode == vm.opcodes.STI then
       -- Регистр, данные из которого записываются в память
@@ -420,9 +465,16 @@ function vm.run()
       -- Адрес указателя
       local addr = vm.registers[OPCODE_PC] + offset9
       -- Указатель (реальный адрес хранения)
-      local targetAddr = vm.memory[addr]
+      local targetAddr = vm.readMem(addr)
       -- Запись данных в конечный адрес
       vm.writeMem(targetAddr, vm.registers[sr])
+
+    elseif opcode == vm.opcodes.JMP then
+      -- Регистр, в котором адрес для перехода
+      local baser = getBaser(instruction)
+      local addr = vm.registers[baser]
+
+      vm.registers[OPCODE_PC] = addr
 
     elseif opcode == vm.opcodes.AND then
       -- Регистр назначения
@@ -449,8 +501,7 @@ function vm.run()
       -- Первый источник
       local sr1 = getSr1(instruction)
 
-      vm.registers[dr] = vm.registers[dr] ~ vm.registers[sr1]
-
+      vm.registers[dr] = ~vm.registers[sr1]
       vm.updateCondFlag(dr)
 
     elseif opcode == vm.opcodes.LDI then
@@ -461,10 +512,9 @@ function vm.run()
       -- Адрес указателя в памяти
       local addr = vm.registers[OPCODE_PC] + offset9
       -- Реальный адрес данных из памяти
-      local realAddress = vm.memory[addr]
+      local realAddress = vm.readMem(addr)
       -- Загружаем данные по найденному адресу
-      vm.registers[dr] = vm.memory[realAddress]
-
+      vm.registers[dr] = vm.readMem(realAddress)
       -- Обновление флагов
       vm.updateCondFlag(dr)
 
@@ -495,11 +545,11 @@ function vm.run()
     elseif opcode == vm.opcodes.TRAP then
       local trapVector = instruction & 0xFF
 
-      -- Вывод значения из R0
-      if trapVector == vm.trapVector.OUT then
+      if trapVector == vm.trapVector.GETC then
+        trap_getc()
+      elseif trapVector == vm.trapVector.OUT then
         trap_out()
       elseif trapVector == vm.trapVector.PUTS then
-        -- Печать символов, пока не встретится 0x0000
         trap_puts()
       elseif trapVector == vm.trapVector.HALT then
         -- Остановка выполнения программы
@@ -507,8 +557,6 @@ function vm.run()
       end
     end
   end
-
-  p(vm.memory[0x3004])
 end
 
 return vm

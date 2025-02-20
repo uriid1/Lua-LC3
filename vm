@@ -1,0 +1,18 @@
+#!/usr/bin/env lua5.4
+local vm = require('src.lc3')
+local readObj = require('src.readObj')
+
+local opts = {
+  debug = false
+}
+
+local part = arg[1]
+if part == 'debug' then
+  opts.debug = true
+  part = arg[2]
+end
+
+local program = readObj(part)
+
+vm.loadProgram(program, program[1], opts)
+vm.run()
